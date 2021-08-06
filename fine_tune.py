@@ -1,7 +1,7 @@
 from tqdm import trange, tqdm
 import os
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '4,5,6,7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
 import torch
 import torch.distributed as dist
@@ -21,7 +21,13 @@ epochs = 1000
 iterations = 10000
 
 i_print = 1
+i_val = 2000
 i_save = 2000
+
+logs = {
+    "loss": [],
+    "accuracy": [],
+}
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -42,11 +48,61 @@ def train(rank, world_size):
     device = torch.device(rank)
     training_process(rank, world_size, device)
     cleanup()
+    
+
+@torch.no_grad()
+def val(model, preprocess):
+    dataset = MSCOCO2014('data', preprocess, type='val')
+    dataset = get_dataset(dataset, 100)
+    image_embeds = []
+    text_embeds = []
+    for batch, (image, text) in enumerate(dataset):
+        if batch == 20: break
+
+        image = image.to('cuda')
+        text = text.to('cuda')
+
+        # Calculate features
+        image_embed = model.encode_image(image)
+        text_embed = model.encode_text(text)
+        image_embeds.append(image_embed)
+        text_embeds.append(text_embed)
+        
+    image_embeds = torch.cat(image_embeds)
+    text_embeds = torch.cat(text_embeds)
+
+    similarity = (100.0 * image_embeds @ text_embeds.T).softmax(dim=-1)
+    _, image_pred_1   = torch.topk(similarity, 1  , dim=1)
+    _, image_pred_5   = torch.topk(similarity, 5  , dim=1)
+    _, image_pred_10  = torch.topk(similarity, 10 , dim=1)
+    _, image_pred_50  = torch.topk(similarity, 50 , dim=1)
+    _, image_pred_100 = torch.topk(similarity, 100, dim=1)
+    _, text_pred_1    = torch.topk(similarity, 1  , dim=0)
+    _, text_pred_5    = torch.topk(similarity, 5  , dim=0)
+    _, text_pred_10   = torch.topk(similarity, 10 , dim=0)
+    _, text_pred_50   = torch.topk(similarity, 50 , dim=0)
+    _, text_pred_100  = torch.topk(similarity, 100, dim=0)
+
+    accuracy = {
+        'image to text': {'top1': 0, 'top5': 0, 'top10': 0, 'top50': 0, 'top100': 0},
+        'text to image': {'top1': 0, 'top5': 0, 'top10': 0, 'top50': 0, 'top100': 0}
+    }
+    
+    for i in range(2000):
+        accuracy['image to text']['top1']   += (i in image_pred_1[i])/2000
+        accuracy['image to text']['top5']   += (i in image_pred_5[i])/2000
+        accuracy['image to text']['top10']  += (i in image_pred_10[i])/2000
+        accuracy['image to text']['top50']  += (i in image_pred_50[i])/2000
+        accuracy['image to text']['top100'] += (i in image_pred_100[i])/2000
+        accuracy['text to image']['top1']   += (i in text_pred_1[:, i])/2000
+        accuracy['text to image']['top5']   += (i in text_pred_5[:, i])/2000
+        accuracy['text to image']['top10']  += (i in text_pred_10[:, i])/2000
+        accuracy['text to image']['top50']  += (i in text_pred_50[:, i])/2000
+        accuracy['text to image']['top100'] += (i in text_pred_100[:, i])/2000
+
+    return accuracy
 
 def training_process(rank, world_size, device):
-    # Logs
-    log = {'loss': []}
-
     # Load the model
     model, preprocess = clip.load('ViT-B/32', device)
     global_step = 0
@@ -80,15 +136,21 @@ def training_process(rank, world_size, device):
             loss = torch.sum((similarity - target)**2) / batch_size
             loss.backward()
             optimizer.step()
-            log['loss'].append(loss.item())
+            logs['loss'].append(loss.item())
             
             if rank == 0:
                 global_step += 1
                 step_bar.update(1)
                 if global_step % i_print == 0:
                     tqdm.write(f'[Train] Iter: {global_step}({epoch}-{batch}) loss: {loss.item()}')
+                if global_step % i_val == 0:
+                    accuracy = val(model, preprocess)
+                    tqdm.write(f'[Validation] accuracy: {accuracy}')
+                    accuracy['global_step'] = global_step
+                    logs['accuracy'].append(accuracy)
                 if global_step % i_save == 0:
                     torch.save(model.state_dict(), os.path.join(log_path, '%06d.pt'%global_step))
+                    torch.save(logs, os.path.join(log_path, 'log%06d.pt'%global_step))
             dist.barrier()
 
 
