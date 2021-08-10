@@ -112,6 +112,7 @@ def training_process(rank, world_size, device):
             if temp > global_step: global_step = temp
     if global_step > 0:
         model.load_state_dict(torch.load(os.path.join(log_path, '%06d.pt'%global_step)))
+        logs = torch.load(os.path.join(log_path, 'log%06d.pt'%global_step))
     model = model.train()
     model_ddp = DDP(model, device_ids=[rank], find_unused_parameters=True)
     model = model_ddp.module
