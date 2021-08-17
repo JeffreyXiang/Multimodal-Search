@@ -74,6 +74,7 @@ def val(model, preprocess):
     text_embeds = torch.cat(text_embeds)
 
     similarity = (100.0 * image_embeds @ text_embeds.T)
+
     _, image_pred_1   = torch.topk(similarity, 1  , dim=1)
     _, image_pred_5   = torch.topk(similarity, 5  , dim=1)
     _, image_pred_10  = torch.topk(similarity, 10 , dim=1)
