@@ -8,13 +8,14 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
+from clipQuantized import *
 
 import clip
 from datasets import *
 
 
 '''=============== CONFIG ==============='''
-log_path = './data/fine_tune'
+log_path = './data/fine_tune_quant_a'
 
 learning_rate = 1e-4
 batch_size = 128
@@ -24,12 +25,14 @@ iterations = 10000
 
 i_print = 5
 i_val = 250
-i_save = 500
+i_save = 250
 
+centroids = []
 logs = {
     "loss": [],
     "accuracy": [],
 }
+
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -53,8 +56,8 @@ def train(rank, world_size):
     
 
 @torch.no_grad()
-def val(model, preprocess):
-    dataset = MSCOCO2014('data', preprocess, type='val')
+def val(model):
+    dataset = MSCOCO2014('data', model.get_preprocess(), type='val')
     dataset = get_dataset(dataset, 100)
     image_embeds = []
     text_embeds = []
@@ -65,8 +68,8 @@ def val(model, preprocess):
         text = text.to('cuda')
 
         # Calculate features
-        image_embed = model.encode_image(image)
-        text_embed = model.encode_text(text)
+        image_embed, _ = model.encode_image(image)
+        text_embed, _ = model.encode_text(text)
         image_embeds.append(image_embed)
         text_embeds.append(text_embed)
         
@@ -104,11 +107,24 @@ def val(model, preprocess):
 
     return accuracy
 
+
 def training_process(rank, world_size, device):
+    global centroids
+    global logs
+    alpha = 1
+    beta = 1
+    M = 32
+    
     if rank==0:
         print("Start training..")
     # Load the model
-    model, preprocess = clip.load('notebooks/model.pt', device)
+    model = ClipQuantizedI2T("notebooks/model.pt", device, M=M, alpha=alpha, beta=beta)
+
+    centroids = np.load("./data/centriods_{}.npy".format(M))
+
+    model.set_centroids(centroids)
+    model.cuda(device)
+    
     global_step = 0
     for filename in os.listdir(log_path):
         if 'pt' in filename and 'log' not in filename:
@@ -122,7 +138,7 @@ def training_process(rank, world_size, device):
     model = model_ddp.module
 
     # Dataset
-    dataset = MSCOCO2014('data', preprocess, type='train')
+    dataset = MSCOCO2014('data', model.get_preprocess(), type='train')
     dataset = get_dataset_distributed(dataset, world_size, rank, batch_size)
 
     # Optimizer
@@ -137,25 +153,25 @@ def training_process(rank, world_size, device):
         for batch, (image, text) in enumerate(dataset):
             # Calculate features
             optimizer.zero_grad()
-            similarity = model_ddp(image, text)
-            loss = torch.sum((similarity - target)**2) / batch_size
+            similarity, quant_loss = model_ddp(image, text)
+            loss = torch.sum((similarity - target)**2) / batch_size + quant_loss
             loss.backward()
             optimizer.step()
             logs['loss'].append(loss.item())
             
             if rank == 0:
-                global_step += 1
-                step_bar.update(1)
                 if global_step % i_print == 0:
-                    tqdm.write(f'[Train] Iter: {global_step}({epoch}-{batch}) loss: {loss.item()}')
+                    tqdm.write(f'[Train] Iter: {global_step}({epoch}-{batch}) loss: {loss.item()-quant_loss.item()}, quant_loss: {quant_loss.item()/(alpha+beta)}')
                 if global_step % i_val == 0:
-                    accuracy = val(model, preprocess)
+                    accuracy = val(model)
                     tqdm.write(f'[Validation] accuracy: {accuracy}')
                     accuracy['global_step'] = global_step
                     logs['accuracy'].append(accuracy)
                 if global_step % i_save == 0:
                     torch.save(model.state_dict(), os.path.join(log_path, '%06d.pt'%global_step))
                     torch.save(logs, os.path.join(log_path, 'log%06d.pt'%global_step))
+                global_step += 1
+                step_bar.update(1)
             dist.barrier()
 
 

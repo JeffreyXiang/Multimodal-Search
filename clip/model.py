@@ -334,7 +334,9 @@ class CLIP(nn.Module):
         return self.visual.conv1.weight.dtype
 
     def encode_image(self, image):
-        return self.visual(image.type(self.dtype))
+        image_features = self.visual(image.type(self.dtype))
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        return image_features
 
     def encode_text(self, text):
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
@@ -348,14 +350,14 @@ class CLIP(nn.Module):
         # x.shape = [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)
         x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+        
+        x = x / x.norm(dim=-1, keepdim=True)
 
         return x
 
     def forward(self, image, text):
         image_features = self.encode_image(image)
         text_features = self.encode_text(text)
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
         return similarity
 

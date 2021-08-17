@@ -6,10 +6,10 @@ import json
 from tqdm import tqdm, trange
 import os
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model, preprocess = clip.load("ViT-B/32", device=device)
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+model, preprocess = clip.load("data/fine_tune/005000.pt", device=device)
 
-with open('./data/annotations/captions_train2014.json') as index_file:
+with open('./data/annotations/captions_val2014.json') as index_file:
     index = json.load(index_file)
 
 text_num = len(index['annotations'])
@@ -24,5 +24,7 @@ for i in trange(text_num):
             text_encode[int(text_info['image_id'])].append(text_features.squeeze().detach().cpu().numpy())
         else:
             text_encode[int(text_info['image_id'])] = [text_features.squeeze().detach().cpu().numpy()]
+    if i > 10000:
+        break
 
-np.save('./data/text_encode.npy', text_encode)
+np.save('./data/text_encode_finetuned.npy', text_encode)

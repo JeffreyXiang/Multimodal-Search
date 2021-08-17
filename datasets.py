@@ -107,8 +107,8 @@ def get_dataset(dataset, batch_size=1, shuffle=True, drop_last=True):
         batch_size=batch_size,
         shuffle=shuffle,
         drop_last=drop_last,
-        pin_memory=False,
-        num_workers=8
+        pin_memory=True,
+        num_workers=0
     )
     return dataloader
 
@@ -126,7 +126,7 @@ def get_dataset_distributed(dataset, world_size, rank, batch_size, shuffle=False
         shuffle=shuffle,
         drop_last=drop_last,
         pin_memory=True,
-        num_workers=16,
+        num_workers=4,
     )
     return dataloader
 
