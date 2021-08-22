@@ -5,6 +5,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 
 
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -76,7 +77,7 @@ def val(model):
     image_embeds = torch.cat(image_embeds)
     text_embeds = torch.cat(text_embeds)
 
-    similarity = (100.0 * image_embeds @ text_embeds.T)
+    similarity = image_embeds @ text_embeds.T
     _, image_pred_1   = torch.topk(similarity, 1  , dim=1)
     _, image_pred_5   = torch.topk(similarity, 5  , dim=1)
     _, image_pred_10  = torch.topk(similarity, 10 , dim=1)
@@ -118,6 +119,7 @@ def training_process(rank, world_size, device):
     if rank==0:
         print("Start training..")
     # Load the model
+    # model = ClipQuantizedI2T("ViT-B/32", device, M=M, alpha=alpha, beta=beta)
     model = ClipQuantizedI2T("notebooks/model.pt", device, M=M, alpha=alpha, beta=beta)
 
     centroids = np.load("./data/centriods_{}.npy".format(M))
@@ -143,7 +145,7 @@ def training_process(rank, world_size, device):
 
     # Optimizer
     optimizer = torch.optim.SGD(params=model_ddp.parameters(), lr=learning_rate)
-    target = torch.eye(batch_size, device=device)
+    target = torch.tensor(list(range(batch_size)), dtype=torch.long, device=device)
 
     step_bar = tqdm(dynamic_ncols=True)
     step_bar.reset(total=iterations)
@@ -153,8 +155,8 @@ def training_process(rank, world_size, device):
         for batch, (image, text) in enumerate(dataset):
             # Calculate features
             optimizer.zero_grad()
-            similarity, quant_loss = model_ddp(image, text)
-            loss = torch.sum((similarity - target)**2) / batch_size + quant_loss
+            similarity_i2t, similarity_t2i, quant_loss = model_ddp(image, text)
+            loss = F.cross_entropy(similarity_i2t, target) + F.cross_entropy(similarity_t2i, target) + quant_loss
             loss.backward()
             optimizer.step()
             logs['loss'].append(loss.item())

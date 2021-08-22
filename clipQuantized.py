@@ -74,12 +74,13 @@ class ClipQuantized(nn.Module):
         return (output - text_vec).detach() + text_vec, quantize_loss
 
     def forward(self, image, text):
-        image_vec, image_quant_loss = self.encode_image(image)
-        text_vec, text_quant_loss = self.encode_text(text)
+        image_features, image_quant_loss = self.encode_image(image)
+        text_features, text_quant_loss = self.encode_text(text)
         quant_loss = (image_quant_loss + text_quant_loss)
-        similarity = (100.0 * image_vec @ text_vec.T).softmax(dim=-1)
-
-        return similarity, quant_loss
+        similarity_i2t = (100.0 * image_features @ text_features.T)
+        similarity_t2i = (100.0 * text_features @ image_features.T)
+        
+        return similarity_i2t, similarity_t2i, quant_loss
 
     
 class ClipQuantizedI2T(ClipQuantized):

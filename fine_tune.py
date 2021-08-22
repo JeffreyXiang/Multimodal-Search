@@ -1,10 +1,11 @@
 from tqdm import trange, tqdm
 import os
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
 
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -16,7 +17,7 @@ from datasets import *
 '''=============== CONFIG ==============='''
 log_path = './data/fine_tune'
 
-learning_rate = 1e-4
+learning_rate = 1e-5
 batch_size = 128
 
 epochs = 1000
@@ -25,11 +26,6 @@ iterations = 10000
 i_print = 5
 i_val = 250
 i_save = 500
-
-logs = {
-    "loss": [],
-    "accuracy": [],
-}
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -73,7 +69,7 @@ def val(model, preprocess):
     image_embeds = torch.cat(image_embeds)
     text_embeds = torch.cat(text_embeds)
 
-    similarity = (100.0 * image_embeds @ text_embeds.T)
+    similarity = image_embeds @ text_embeds.T
 
     _, image_pred_1   = torch.topk(similarity, 1  , dim=1)
     _, image_pred_5   = torch.topk(similarity, 5  , dim=1)
@@ -108,13 +104,20 @@ def val(model, preprocess):
 def training_process(rank, world_size, device):
     if rank==0:
         print("Start training..")
+        
     # Load the model
+    # model, preprocess = clip.load('ViT-B/32', device)
     model, preprocess = clip.load('notebooks/model.pt', device)
+    logs = {
+        "loss": [],
+        "accuracy": [],
+    }
     global_step = 0
     for filename in os.listdir(log_path):
         if 'pt' in filename and 'log' not in filename:
             temp = int(filename[0:6])
             if temp > global_step: global_step = temp
+    global_step = -1
     if global_step > 0:
         model.load_state_dict(torch.load(os.path.join(log_path, '%06d.pt'%global_step)))
         logs = torch.load(os.path.join(log_path, 'log%06d.pt'%global_step))
@@ -128,7 +131,7 @@ def training_process(rank, world_size, device):
 
     # Optimizer
     optimizer = torch.optim.SGD(params=model_ddp.parameters(), lr=learning_rate)
-    target = torch.eye(batch_size, device=device)
+    target = torch.tensor(list(range(batch_size)), dtype=torch.long, device=device)
 
     step_bar = tqdm(dynamic_ncols=True)
     step_bar.reset(total=iterations)
@@ -138,8 +141,8 @@ def training_process(rank, world_size, device):
         for batch, (image, text) in enumerate(dataset):
             # Calculate features
             optimizer.zero_grad()
-            similarity = model_ddp(image, text)
-            loss = torch.sum((similarity - target)**2) / batch_size
+            similarity_i2t, similarity_t2i = model_ddp(image, text)
+            loss = F.cross_entropy(similarity_i2t, target) + F.cross_entropy(similarity_t2i, target)
             loss.backward()
             optimizer.step()
             logs['loss'].append(loss.item())
