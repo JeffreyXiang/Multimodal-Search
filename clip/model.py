@@ -358,9 +358,7 @@ class CLIP(nn.Module):
     def forward(self, image, text):
         image_features = self.encode_image(image)
         text_features = self.encode_text(text)
-        similarity_i2t = (100.0 * image_features @ text_features.T)
-        similarity_t2i = (100.0 * text_features @ image_features.T)
-        return similarity_i2t, similarity_t2i
+        return image_features, text_features
 
 
 def convert_weights(model: nn.Module):

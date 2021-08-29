@@ -131,7 +131,7 @@ def training_process(rank, world_size, device):
 
     # Optimizer
     optimizer = torch.optim.SGD(params=model_ddp.parameters(), lr=learning_rate)
-    target = torch.tensor(list(range(batch_size)), dtype=torch.long, device=device)
+    target = torch.tensor(list(range(batch_size*world_size)), dtype=torch.long, device=device)
 
     step_bar = tqdm(dynamic_ncols=True)
     step_bar.reset(total=iterations)
@@ -142,6 +142,14 @@ def training_process(rank, world_size, device):
             # Calculate features
             optimizer.zero_grad()
             image_features, text_features = model_ddp(image, text)
+            image_features_list = [torch.zeros_like(image_features) for _ in range(world_size)]
+            text_features_list = [torch.zeros_like(text_features) for _ in range(world_size)]
+            dist.all_gather(image_features_list, image_features)
+            dist.all_gather(text_features_list, text_features)
+            image_features_list[rank] = image_features
+            text_features_list[rank] = text_features
+            image_features = torch.cat(image_features_list)
+            text_features = torch.cat(text_features_list)
             similarity_i2t = (100.0 * image_features @ text_features.T)
             similarity_t2i = (100.0 * text_features @ image_features.T)
             loss = F.cross_entropy(similarity_i2t, target) + F.cross_entropy(similarity_t2i, target)
